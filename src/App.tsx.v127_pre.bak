@@ -1,0 +1,8 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useCallback, ReactNode, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+... (rest of App.tsx would go here)

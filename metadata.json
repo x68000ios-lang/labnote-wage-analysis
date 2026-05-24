@@ -1,0 +1,5 @@
+{
+  "name": "Remix: LabNote Ver.1.0",
+  "description": "LabNote（ラボノート）は、就労継続支援事業所における「工賃計算」と「日報解析」の業務負荷を軽減するために開発されたAI評価システムです。現バージョンでは「Welsys Plus ＋」に特化していますが、汎用AIとしての性格も併せ持ち、様々なテキストデータ解析に応用可能です。",
+  "requestFramePermissions": []
+}
