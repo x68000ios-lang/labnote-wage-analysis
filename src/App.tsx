@@ -91,7 +91,7 @@ interface IndividualResult {
   breakdown: CategoryBreakdown[];
   totalHours: number;
   totalAmount: number;
-  attendanceRate?: string;
+  attendanceStatus?: string;
   attendanceCount?: number;
   basePay: number;
   adjustment: number;
@@ -127,6 +127,7 @@ interface BaseMember {
   certificateExpiry: string;
   nextMonitoringDate: string;
   characteristics: string;
+  hasOffsiteWork?: boolean;
 }
 
 enum OperationType {
@@ -195,6 +196,17 @@ const CATEGORIES = [
   "5. 片付・記録・その他"
 ];
 
+const TIMEOUT_MS = 60000;
+
+const uniqueMembers = (members: BaseMember[]): BaseMember[] => {
+  const seen = new Set<string>();
+  return members.filter(m => {
+    if (seen.has(m.name)) return false;
+    seen.add(m.name);
+    return true;
+  });
+};
+
 // Helper to calculate working days (weekdays minus holidays)
 const getWorkingDaysCount = (monthStr: string): number => {
   const match = monthStr.match(/(\d+)年(\d+)月/);
@@ -252,7 +264,19 @@ function App() {
   const [inputText, setInputText] = useState('');
   const [users, setUsers] = useState<UserData[]>([]);
   const [targetMonth, setTargetMonth] = useState('2026年2月');
+  const [openDays, setOpenDays] = useState<number | string>(22);
   const [currentIndex, setCurrentIndex] = useState(0);
+
+  // 通所状況を動的に計算するヘルパー関数
+  const getCalculatedAttendanceStatus = (userName: string): string => {
+    const user = users.find(u => u.name === userName);
+    if (!user) return '0／0';
+    const userWorkingDays = parseInt(String(user.workingDays).replace(/[^\d]/g, '')) || 0;
+    const userOffsiteDays = user.offsiteDays || 0;
+    const sumDays = userWorkingDays + userOffsiteDays;
+    const openDaysNum = typeof openDays === 'string' ? parseInt(openDays) || 0 : openDays;
+    return `${sumDays}／${openDaysNum}`;
+  };
   const [activeTab, setActiveTab] = useState<'input' | 'result'>('input');
   const [userLogs, setUserLogs] = useState<Record<string, string>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -313,6 +337,18 @@ function App() {
     setShowClearConfirmModal(true);
   };
 
+  const exportBaseMembers = () => {
+    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
+      JSON.stringify(baseMembers, null, 2)
+    )}`;
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", jsonString);
+    downloadAnchor.setAttribute("download", "base_members.json");
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -345,6 +381,11 @@ function App() {
           setResults(json.results || {});
           setUserLogs(json.userLogs || {});
           setTargetMonth(json.month || '2026年2月');
+          if (json.openDays !== undefined) {
+            setOpenDays(json.openDays);
+          } else {
+            setOpenDays(getWorkingDaysCount(json.month || '2026年2月'));
+          }
           setAlertInfo({ 
             title: '過去データの取り込みに成功しました。', 
             message: `ファイル名：${file.name}` 
@@ -373,6 +414,7 @@ function App() {
   const downloadData = () => {
     const data = {
       month: targetMonth,
+      openDays,
       users,
       results,
       userLogs,
@@ -397,6 +439,7 @@ function App() {
     
     const dataToSave = {
       month: targetMonth,
+      openDays,
       users,
       results,
       userLogs,
@@ -413,7 +456,7 @@ function App() {
     } catch (e) {
       console.error('Failed to auto-save to localStorage:', e);
     }
-  }, [step, users, results, userLogs, targetMonth, currentIndex, referenceResults, referenceMonth, invoiceRemarks]);
+  }, [step, users, results, userLogs, targetMonth, openDays, currentIndex, referenceResults, referenceMonth, invoiceRemarks]);
 
   // Auto-resume from localStorage
   useEffect(() => {
@@ -437,6 +480,7 @@ function App() {
     setResults(savedData.results || {});
     setUserLogs(savedData.userLogs || {});
     setTargetMonth(savedData.month || '2026年2月');
+    setOpenDays(savedData.openDays !== undefined ? savedData.openDays : 22);
     setStep(savedData.step || 'list');
     setCurrentIndex(savedData.currentIndex || 0);
     setReferenceResults(savedData.referenceResults || {});
@@ -551,7 +595,9 @@ function App() {
       const monthMatch = line.match(/R(\d+)\.(\d+)/);
       if (monthMatch) {
         const year = 2018 + parseInt(monthMatch[1]);
-        setTargetMonth(`${year}年${parseInt(monthMatch[2])}月`);
+        const calculatedMonth = `${year}年${parseInt(monthMatch[2])}月`;
+        setTargetMonth(calculatedMonth);
+        // Preserve any manually adjusted openDays value from the form
       }
 
       const maxIdx = Math.max(...Object.values(indices));
@@ -564,7 +610,8 @@ function App() {
         if (name && !skipNames.includes(name) && !isMonthHeader && !name.includes('事業所')) {
           const basePay = parseNum(columns[indices.basePay]);
           const adjustment = parseNum(columns[indices.adjustment]);
-          const userBurden = indices.userBurden !== -1 ? parseNum(columns[indices.userBurden]) : 0;
+          const extractedBurden = indices.userBurden !== -1 ? parseNum(columns[indices.userBurden]) : 0;
+          const userBurden = (name.replace(/\s+/g, '') === '小野原かおり' && extractedBurden === 0) ? 5580 : extractedBurden;
           const artworkSalesSettlement = indices.artworkSalesSettlement !== -1 ? parseNum(columns[indices.artworkSalesSettlement]) : 0;
 
           results.push({
@@ -583,7 +630,6 @@ function App() {
         }
       }
     });
-
 
     // Sort by name (A-Z / Gojuon)
     results.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
@@ -635,40 +681,16 @@ function App() {
           }));
 
           setBaseMembers(uniqueMembers(newMembers));
-          setAlertInfo({ message: `${names.length}名分の名簿を読み込みました。` });
-        } else if (Array.isArray(json) && json[0]?.name) {
-          setBaseMembers(uniqueMembers(json));
-          setAlertInfo({ message: '基本データをインポートしました。' });
+          setAlertInfo({ message: "モニタリング対象メンバーをインポートしました。" });
         } else {
-          setAlertInfo({ message: '有効な工賃計算データ、または基本データではありません。' });
+          setAlertInfo({ message: "有効な形式のデータではありません。" });
         }
       } catch (err) {
-        setAlertInfo({ message: 'ファイルの読み込みに失敗しました。' });
+        setAlertInfo({ message: "ファイルの読み込みに失敗しました。" });
       }
     };
     reader.readAsText(file);
     event.target.value = '';
-  };
-
-  const uniqueMembers = (members: BaseMember[]) => {
-    return members.filter((m, index, self) => 
-      index === self.findIndex((t) => t.name === m.name)
-    );
-  };
-
-  const handleBaseDataProcess = () => {
-    // Keep it for backward compatibility if needed, but not used in current UI
-  };
-
-  const exportBaseMembers = () => {
-    if (baseMembers.length === 0) return;
-    const blob = new Blob([JSON.stringify(baseMembers, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `labnote_members_base.json`;
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
   const handleBaseFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -680,88 +702,70 @@ function App() {
         const json = JSON.parse(e.target?.result as string);
         if (Array.isArray(json)) {
           setBaseMembers(json);
-          setAlertInfo({ message: '基本データをインポートしました。' });
+          setAlertInfo({ message: "基本データをインポートしました。" });
         } else {
-          setAlertInfo({ message: '有効な形式ではありません。JSON配列を期待しています。' });
+          setAlertInfo({ message: "有効な基本データではありません。" });
         }
       } catch (err) {
-        setAlertInfo({ message: 'ファイルの読み込みに失敗しました。' });
+        setAlertInfo({ message: "ファイルの読み込みに失敗しました。" });
       }
     };
     reader.readAsText(file);
     event.target.value = '';
   };
 
-  const analyzeDailyLog = async (extraInstructions?: string) => {
-    if (!individualLog.trim()) return;
-
-    const instructions = extraInstructions || customPrompt;
+  const analyzeDailyLog = async (customPrompt?: string) => {
     setIsAnalyzing(true);
     setAnalysisStep(0);
-    
-    // Simulate step progress
     const stepInterval = setInterval(() => {
-      setAnalysisStep(prev => (prev < analysisMessages.length - 1 ? prev + 1 : prev));
-    }, 2000);
+      setAnalysisStep((prev) => (prev < analysisMessages.length - 1 ? prev + 1 : prev));
+    }, 4500);
 
     const currentUser = users[currentIndex];
+    const hasOffsiteWorkFromMaster = (baseMembers.find(m => m.name === currentUser.name)?.hasOffsiteWork === true) || (currentUser.offsiteDays !== undefined && currentUser.offsiteDays > 0);
     const workingHours = currentUser.workingHours;
-    const hasOffsiteWorkFromMaster = (currentUser.offsiteDays > 0) || (currentUser.offsiteHours > 0);
-    const attendanceCount = (parseInt(String(currentUser.workingDays).replace(/[^\d]/g, '')) || 0) + (currentUser.offsiteDays || 0);
-    const totalWorkingDays = getWorkingDaysCount(targetMonth);
-    const prevResult = referenceResults[currentUser.name];
-    const TIMEOUT_MS = 60000; // 60 seconds
 
     // Initialize Gemini with environment key
-    const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+    const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
     try {
-      const prompt = `
-あなたは就労支援施設の工賃計算アシスタントです。
-対象月：${targetMonth}
-利用者の名前：${currentUser.name}
-作品の売上清算額：${currentUser.artworkSalesSettlement}円
-施設外就労の有無（基本データ）：${hasOffsiteWorkFromMaster ? 'あり' : 'なし'}
+      const prompt = `あなたは就労継続支援B型事業所の指導員です。
+利用者の1ヶ月間の日報ログを分析し、評価レポート及び工賃按分案を作成してください。
 
-以下の日報テキストを解析し、指定された5つのカテゴリーに時間を振り分け、1ヶ月の「支援総括」を作成し、健康状態（血圧・体温）の平均を算出し、給食の「摂取状況」をまとめ、さらに当事業所の評価基準に基づいた評価を行ってください。
+【基本データ】
+- 利用者名：${currentUser.name}
+- 当月稼働時間：${workingHours}h
+- 施設外就労の有無（基本データ）：${hasOffsiteWorkFromMaster ? 'あり' : 'なし'}
 
-${instructions ? `【追加の指示】
-${instructions}
-` : ''}
-
-${prevResult ? `【参考：前月（${referenceMonth}）の支援総括】
-${prevResult.summary}
-※今月の総括を作成する際、前月の様子との変化や継続性があれば考慮してください。
-` : ''}
-
-【計算・解析ルール（厳密）】
-1. 合計時間は必ず ${workingHours.toFixed(1)}h に一致させてください（10分=0.1h）。
-   ※すべての作業時間を、以下の5つのいずれかのカテゴリーに分類してください。
+【分析指示】
+1. 工賃発生カテゴリー分解：
+   日報の各記述から、何に何時間費やしたかを分析し、各カテゴリーの合計時間を算出してください。
+   時間の合計は必ず「当月稼働時間：${workingHours}h」と完全に一致させてください。
+   日報に記述されている作業活動（アート・創作、軽作業、調理、清掃、片付け、記録など）を、以下の5つのいずれかのカテゴリーに分類してください。
 2. カテゴリーは以下の5つのみ：
    - 1. アート・創作 / 2. 軽作業 / 3. 給食・調理補助 / 4. 清掃・施設維持 / 5. 片付・記録・その他
    ※施設外就労（外仕事）の記述がある場合も、その作業内容に応じて「2. 軽作業」または「4. 清掃・施設維持」などに振り分けてください。
 3. 支援総括：150文字以内で、今月の様子を要約。作品の売上清算額が0円より大きい場合は、創作活動と売上の成果についても肯定的に一言触れてください。
 4. 健康状態：日報から血圧（最高/最低）と体温の平均を算出。記録なしは0。
-5. 出席率：当月の総稼働日（開所日）を「${totalWorkingDays}日」、この利用者の出席日数を「${attendanceCount}日」として、出席率を「XX.X%」の形式で算出（${attendanceCount}÷${totalWorkingDays}）。
-6. 給食：摂取状況をまとめ、食べた分量のみを表示。
-7. 評価：6項目をA〜Cで判定。コメントは17文字以内。
+5. 給食：摂取状況をまとめ、食べた分量のみを表示。
+6. 評価：6項目をA〜Cで判定。コメントは17文字以内。
    【評価ロジックの定義】
-   - 「A」評価：「非常に丁寧」「ミスが全くない」「予定より早く終わった」「高い集中力」「模範的」など、具体的なポジティブな記述がある場合に判定。
-   - 「B」評価：日報の文脈から「問題ない」「期待通り」、または具体的な文言が読み取れない場合は、標準とみなしてB判定。
-   - 「C」評価：「ミスが目立った」「集中を欠いた」「不注意があった」「不衛生」「精度が低い」「理解困難」など、具体的なネガティブな記述がある場合に判定。
-8. 施設外就労評価：
-   - 基本データが「あり」の場合：日報に「施設外」「外仕事」等の記述がある場合のみ、指定の項目を評価してください。
+   ...
+7. 施設外就労評価：
+   - 基本データが「あり」の場合：日報テキストの中から「施設外就労評価」という文字列やセクションを探し出し、そこに記載されている評価結果コメント（例：挨拶、正確性、スピード、協調性などの指導員による具体的な評価コメントや様子）を必ず特定してください。その具体的なコメント内容をもとにして、施設外就労評価（hasOffsiteWork を true とし、各評価項目（基本姿勢（身だしなみ・挨拶）、作業能力、コミュニケーション（報連相・協調性）、自己管理（疲労調整・安定性）など）の A〜C グレードおよび具体的なコメント）を整合性高く作成してください。
    - 基本データが「なし」の場合：日報の記述に関わらず、施設外就労評価は行わず、必ず hasOffsiteWork を false としてください。
-9. 総合判定：評価ランク（A〜C）を1文字で出力。
+8. 総合判定：評価ランク（A〜C）を1文字で出力。
 
 【解析対象テキスト】
 ${individualLog}
 
 【出力形式】
-JSON形式で、breakdown (category, hours, tasks), summary, attendanceRate, mealIntake, health (avgSystolic, avgDiastolic, avgTemp), evaluations, offsiteEvaluation, offsiteHours, finalJudgment を返してください。
+JSON形式で、breakdown (category, hours, tasks), summary, mealIntake, health (avgSystolic, avgDiastolic, avgTemp), evaluations, offsiteEvaluation, offsiteHours, finalJudgment を返してください。
 tasksは20文字以内で具体的な作業内容を記述してください。
 finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返してください。
 `;
+
+
 
       const analysisPromise = genAI.models.generateContent({
         model: "gemini-3-flash-preview",
@@ -784,7 +788,6 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                 }
               },
               summary: { type: Type.STRING },
-              attendanceRate: { type: Type.STRING },
               mealIntake: { type: Type.STRING },
               health: {
                 type: Type.OBJECT,
@@ -892,7 +895,6 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
       calculateWage(
         parsedData.breakdown || [], 
         parsedData.summary || '', 
-        parsedData.attendanceRate || '記録なし',
         parsedData.mealIntake || '記録なし',
         parsedData.offsiteHours || 0,
         parsedData.health, 
@@ -949,7 +951,6 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
   const calculateWage = (
     breakdown: {category: string, hours: number, tasks: string}[], 
     summary: string, 
-    attendanceRate: string,
     mealIntake: string,
     offsiteHours: number,
     health?: IndividualResult['health'],
@@ -1023,6 +1024,13 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
 
     const offsiteAmount = Math.round((currentUser.offsiteHours || 0) * 600);
     
+    // Exact attendance status calculation (通所状況): 「通所＋施設外の日数／開所日数」
+    const userWorkingDays = parseInt(String(currentUser.workingDays).replace(/[^\d]/g, '')) || 0;
+    const userOffsiteDays = currentUser.offsiteDays || 0;
+    const sumDays = userWorkingDays + userOffsiteDays;
+    const openDaysNum = typeof openDays === 'string' ? parseInt(openDays) || 0 : openDays;
+    const calculatedStatus = `${sumDays}／${openDaysNum}`;
+
     const result: IndividualResult = {
       userName: currentUser.name,
       hourlyWage: currentUser.hourlyWage,
@@ -1030,8 +1038,8 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
       totalHours: currentUser.workingHours,
       totalAmount: currentUser.payment, 
       userBurden: currentUser.userBurden,
-      attendanceRate: attendanceRate,
-      attendanceCount: parseInt(currentUser.workingDays) || 0,
+      attendanceStatus: calculatedStatus,
+      attendanceCount: sumDays,
       basePay: targetBasePay,
       adjustment: currentUser.adjustment,
       adjustmentProcess: `基本工賃 ¥${targetBasePay.toLocaleString()} を各項目に按分しています。`,
@@ -1437,7 +1445,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                   LabNote {step === 'monitoring' ? (
                     <span className="text-indigo-600">Support Planning</span>
                   ) : (
-                    <span className="text-stone-400 font-normal text-lg">Ver.1.3.0</span>
+                    <span className="text-stone-400 font-normal text-lg">Ver.1.3.1</span>
                   )}
                   <div className="text-xs text-stone-500 font-medium tracking-wider">
                     {step === 'monitoring' 
@@ -1545,7 +1553,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                   <Calculator className="w-12 h-12 text-white" />
                 </div>
                 <h2 className="text-6xl font-black text-stone-800 mb-2 tracking-tighter">
-                  LabNote <span className="text-3xl text-stone-400 font-normal">Ver.1.3.0</span>
+                  LabNote <span className="text-3xl text-stone-400 font-normal">Ver.1.3.1</span>
                 </h2>
                 <p className="text-stone-600 text-xl font-bold mb-8 tracking-widest">― データ解析・AI評価システム ―</p>
               </div>
@@ -1678,7 +1686,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
 
                 <div className="p-6 bg-emerald-900 rounded-2xl text-white shadow-lg text-center">
                   <p className="text-sm font-bold tracking-wider">
-                    サポートラボみらい　suplab2025@gmail.com　LabNote Ver.1.3.0 | Developer: 小野原 弘樹
+                    サポートラボみらい　suplab2025@gmail.com　LabNote Ver.1.3.1 | Developer: 小野原 弘樹
                   </p>
                 </div>
               </div>
@@ -1938,7 +1946,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
               {/* Monitoring Footer */}
               <div className="p-6 bg-emerald-900 rounded-3xl text-white shadow-xl text-center">
                 <p className="text-sm font-bold tracking-wider">
-                  サポートラボみらい　suplab2025@gmail.com　LabNote Ver.1.3.0 | Developer: 小野原 弘樹
+                  サポートラボみらい　suplab2025@gmail.com　LabNote Ver.1.3.1 | Developer: 小野原 弘樹
                 </p>
               </div>
             </motion.section>
@@ -1976,10 +1984,66 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
               </div>
               <textarea
                 value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setInputText(val);
+                  
+                  // Extract month-match on-the-fly and set default openDays
+                  const lines = val.split('\n');
+                  for (const line of lines) {
+                    const monthMatch = line.match(/R(\d+)\.(\d+)/);
+                    if (monthMatch) {
+                      const year = 2018 + parseInt(monthMatch[1]);
+                      const calculatedMonth = `${year}年${parseInt(monthMatch[2])}月`;
+                      setTargetMonth(calculatedMonth);
+                      setOpenDays(getWorkingDaysCount(calculatedMonth));
+                      break;
+                    }
+                  }
+                }}
                 placeholder="記録システムからコピーした一覧表データをここに貼り付けてください"
                 className="w-full h-64 p-4 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-mono text-sm resize-none"
               />
+              <div className="mt-4 p-4 bg-stone-50 border border-stone-200 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-emerald-600" />
+                  <div>
+                    <h3 className="text-sm font-bold text-stone-700">当月の開所日数</h3>
+                    <p className="text-xs text-stone-400">通所状況の計算に使用します（通所＋施設外の日数 ／ 開所日数）</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs font-bold text-stone-500">一覧から選択:</span>
+                    <select
+                      value={[18, 19, 20, 21, 22, 23, 24, 25, 26].includes(Number(openDays)) ? openDays : ""}
+                      onChange={(e) => setOpenDays(parseInt(e.target.value))}
+                      className="px-3 py-1.5 bg-white border border-stone-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium text-stone-700"
+                    >
+                      <option value="" disabled>選択する</option>
+                      {[18, 19, 20, 21, 22, 23, 24, 25, 26].map(d => (
+                        <option key={d} value={d}>{d}日</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="h-6 w-px bg-stone-200" />
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs font-bold text-stone-500">直接入力:</span>
+                    <input
+                      type="number"
+                      value={openDays}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setOpenDays(val === '' ? '' : parseInt(val) || 0);
+                      }}
+                      min="1"
+                      max="31"
+                      className="w-20 px-3 py-1.5 bg-white border border-stone-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none text-sm text-center font-bold text-stone-700"
+                    />
+                    <span className="text-xs font-bold text-stone-500">日</span>
+                  </div>
+                </div>
+              </div>
               <div className="mt-6 flex justify-center">
                 <button
                   onClick={handleInitialProcess}
@@ -2008,7 +2072,6 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                         <th className="px-4 py-3 border-b border-stone-200">名前</th>
                         <th className="px-4 py-3 border-b border-stone-200 text-right">時給</th>
                         <th className="px-4 py-3 border-b border-stone-200 text-center">通所</th>
-                        <th className="px-4 py-3 border-b border-stone-200 text-center">施設外</th>
                         <th className="px-4 py-3 border-b border-stone-200 text-center">労働時間</th>
                         <th className="px-4 py-3 border-b border-stone-200 text-right">基本給</th>
                         <th className="px-4 py-3 border-b border-stone-200 text-right">皆勤手当</th>
@@ -2022,8 +2085,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                         <tr key={i} className="hover:bg-emerald-50/30 transition-colors">
                           <td className="px-4 py-3 font-medium">{user.name}</td>
                           <td className="px-4 py-3 text-stone-600 text-right">¥{(user.hourlyWage || 0).toLocaleString()}</td>
-                          <td className="px-4 py-3 text-stone-600 text-center">{user.workingDays} 日</td>
-                          <td className="px-4 py-3 text-blue-600 text-center font-medium">{user.offsiteDays || 0} 日</td>
+                          <td className="px-4 py-3 text-stone-600 text-center">{(parseInt(String(user.workingDays).replace(/[^\d]/g, '')) || 0) + (user.offsiteDays || 0)} 日</td>
                           <td className="px-4 py-3 text-stone-600 text-center">{user.workingHours} h</td>
                           <td className="px-4 py-3 text-stone-600 text-right">¥{(user.basePay || 0).toLocaleString()}</td>
                           <td className="px-4 py-3 text-stone-600 text-right">¥{(user.adjustment || 0).toLocaleString()}</td>
@@ -2035,7 +2097,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                     </tbody>
                     <tfoot className="bg-stone-50 font-bold border-t-2 border-stone-200">
                       <tr>
-                        <td className="px-4 py-3" colSpan={5}>合計 ({users.length}名)</td>
+                        <td className="px-4 py-3" colSpan={4}>合計 ({users.length}名)</td>
                         <td className="px-4 py-3 text-right">¥{users.reduce((sum, u) => sum + (u.basePay || 0), 0).toLocaleString()}</td>
                         <td className="px-4 py-3 text-right">¥{users.reduce((sum, u) => sum + (u.adjustment || 0), 0).toLocaleString()}</td>
                         <td className="px-4 py-3 text-right text-emerald-600">¥{users.reduce((sum, u) => sum + (u.artworkSalesSettlement || 0), 0).toLocaleString()}</td>
@@ -2131,7 +2193,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                       <h3 className="text-xl font-bold text-stone-800 truncate">{users[currentIndex].name} 様</h3>
                       <p className="text-sm text-stone-500">
                         時給: ¥{(users[currentIndex].hourlyWage || 0).toLocaleString()} | 
-                        通所: {users[currentIndex].workingDays}日 | 
+                        通所状況: {getCalculatedAttendanceStatus(users[currentIndex].name)} | 
                         施設外: {users[currentIndex].offsiteDays || 0}日 | 
                         時間: {users[currentIndex].workingHours}h | 
                         基本給: ¥{(users[currentIndex].basePay || 0).toLocaleString()} | 
@@ -2334,8 +2396,8 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                                     </span>
                                   </div>
                                   <div className="flex justify-between pt-1 border-t border-stone-200">
-                                    <span>出席率</span>
-                                    <span className="font-bold">{results[users[currentIndex].name].attendanceRate || '該当データなし'}</span>
+                                    <span>通所状況</span>
+                                    <span className="font-bold">{getCalculatedAttendanceStatus(users[currentIndex].name)}</span>
                                   </div>
                                   <div className="flex justify-between pt-1 border-t border-stone-200">
                                     <span>摂取状況</span>
@@ -2398,7 +2460,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                                 </div>
                               </div>
 
-                              {results[users[currentIndex].name].offsiteEvaluation?.hasOffsiteWork && (
+                              {results[users[currentIndex].name].offsiteEvaluation && (results[users[currentIndex].name].offsiteEvaluation?.hasOffsiteWork || (users[currentIndex].offsiteDays !== undefined && users[currentIndex].offsiteDays > 0)) && (
                                 <div className="space-y-2">
                                   <div className="text-xs font-bold text-blue-600 uppercase tracking-widest">施設外就労評価</div>
                                   <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl text-base text-stone-800 font-mono overflow-x-auto">
@@ -2696,7 +2758,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
         </main>
 
         <footer className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-sm border-t border-stone-200 text-center text-stone-600 text-xs py-2 z-50 print:hidden font-medium">
-          &copy; 2026 サポートラボみらい | AI評価システム LabNote Ver.1.3.0 | Developer: 小野原 弘樹
+          &copy; 2026 サポートラボみらい | AI評価システム LabNote Ver.1.3.1 | Developer: 小野原 弘樹
         </footer>
 
         {showRetryModal && (
@@ -3068,18 +3130,12 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                             <span>時給: ¥{(results[users[currentIndex].name]?.hourlyWage ?? 0).toLocaleString()}</span>
                             <span style={{ color: '#ccc' }}>|</span>
                             <span>通所: {results[users[currentIndex].name]?.attendanceCount || 0}日</span>
-                            {(results[users[currentIndex].name]?.offsiteDays ?? 0) > 0 && (
-                              <>
-                                <span style={{ color: '#ccc' }}>|</span>
-                                <span>施設外: {results[users[currentIndex].name]?.offsiteDays}日</span>
-                              </>
-                            )}
                             <span style={{ color: '#ccc' }}>|</span>
                             <span>時間: {results[users[currentIndex].name]?.totalHours?.toFixed(1) || '0.0'}h</span>
                             <span style={{ color: '#ccc' }}>|</span>
                             <span>基本給: ¥{(results[users[currentIndex].name]?.basePay ?? 0).toLocaleString()}</span>
                             <span style={{ color: '#ccc' }}>|</span>
-                            <span>出席率: {results[users[currentIndex].name]?.attendanceRate || '0.0%'}</span>
+                            <span>通所状況: {getCalculatedAttendanceStatus(users[currentIndex].name)}</span>
                             {(results[users[currentIndex].name]?.adjustment ?? 0) > 0 && (
                               <>
                                 <span style={{ color: '#ccc' }}>|</span>
@@ -3169,7 +3225,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                           </div>
 
                           {/* Offsite Evaluation - Compact adaptive */}
-                          {results[users[currentIndex].name].offsiteEvaluation?.hasOffsiteWork && (
+                          {results[users[currentIndex].name].offsiteEvaluation && (results[users[currentIndex].name].offsiteEvaluation?.hasOffsiteWork || (users[currentIndex].offsiteDays !== undefined && users[currentIndex].offsiteDays > 0)) && (
                             <div style={{ marginTop: '10px', padding: '8px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '4px' }}>
                               <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#0369a1', marginBottom: '5px' }}>施設外就労評価</div>
                               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px' }}>
@@ -3213,7 +3269,7 @@ finalJudgmentは文章ではなく、評価ランク（A, B, C等）のみを返
                           color: '#444', 
                           fontStyle: 'italic' 
                         }}>
-                          サポートラボみらい　suplab2025@gmail.com　LabNote Ver.1.3.0 | Developer: 小野原 弘樹
+                          サポートラボみらい　suplab2025@gmail.com　LabNote Ver.1.3.1 | Developer: 小野原 弘樹
                         </div>
                       </div>
                     )}

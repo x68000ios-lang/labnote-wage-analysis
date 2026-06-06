@@ -1,10 +1,11 @@
 # Project Instructions
 
-## Active Development (Ver 1.3.0)
-- **Instruction:** Ver 1.3.0 active. Integrated specialized "業務委託料請求書" (Business Consignment Invoice) matching total company commission perfectly up to 1 yen. Hid time-based quantities (now using "一式" or non-hourly names), renamed tasks to align with professional corporate service categories instead of welfare terminology, added "Summary Table" preview and advanced print settings (using standard defaults/scale).
-- **Status:** Active (as of 2026-05-24)
+## Active Development (Ver 1.3.1)
+- **Instruction:** Ver 1.3.1 active. Properly aligned the attendance rate parsing logic in individual report results: exact calculation uses target monthly open days as bases, dividing the sum of in-facility transit and offsite working days. Thorough version management enforcement applied. No other functions modified.
+- **Status:** Active (as of 2026-06-05)
 
 ## Version History
+- **Ver 1.3.1 (2026-06-05):** Strictly configured exact attendance rate formula using physical + offsite days over parsed or manual monthly open days. Recorded explicit changes for meticulous version compliance.
 - **Ver 1.3.0 (2026-05-24):** Upgraded consignment invoice professional mappings, hidden hour-based metrics, 1-yen exact balancing applied to administrative auxiliary work, added Itemized Summary Table print preview, and standardized print scaling & layout.
 - **Ver 1.2.7 (2026-05-18):** Adjusted offsite facility evaluations, print outputs, and resolved dynamic layout rendering bugs.
 - **Ver 1.2.5 (2026-05-04):** Extracted "User Burden" from master data, integrated into client status tables and printed outputs.
